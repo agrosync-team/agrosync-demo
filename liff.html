@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ลงทะเบียนแปลง · Agro-Sync</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; font-size: 18px; color: #1d2b1f; background: #f6f8f3; }
+  h1 { font-size: 22px; margin: 0 0 12px; }
+  label { display: block; margin: 14px 0 6px; font-weight: 600; }
+  select, input { width: 100%; box-sizing: border-box; font-size: 18px; padding: 10px; border: 1px solid #b9c4b4; border-radius: 8px; }
+  #map { height: 260px; border-radius: 8px; margin-top: 6px; }
+  .hint { font-size: 15px; color: #5b6a58; }
+  .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; }
+  .check input { width: auto; margin-top: 4px; }
+  button { width: 100%; margin-top: 20px; padding: 14px; font-size: 20px; border: 0; border-radius: 10px; background: #2f6b3a; color: #fff; }
+  button:disabled { background: #9aa99a; }
+  #msg { margin-top: 14px; font-size: 17px; }
+</style>
+</head>
+<body>
+<h1>ลงทะเบียนแปลง</h1>
+
+<label for="crop">ปลูกอะไร</label>
+<select id="crop">
+  <option value="rice">ข้าว (ฟางข้าว)</option>
+  <option value="sugarcane">อ้อย (ใบอ้อย)</option>
+  <option value="cassava" selected>มันสำปะหลัง (เหง้ามัน)</option>
+</select>
+
+<label for="area">กี่ไร่</label>
+<input id="area" type="number" min="1" step="0.5" value="16">
+
+<label for="village">หมู่ที่</label>
+<input id="village" type="number" min="1" value="9">
+
+<label for="ready">คาดว่าจะเก็บเกี่ยวเสร็จวันไหน</label>
+<input id="ready" type="date" value="2026-12-03">
+
+<label>แปลงอยู่ตรงไหน</label>
+<div class="hint">แตะบนแผนที่ตรงแปลงของคุณ</div>
+<div id="map"></div>
+
+<label class="check"><input id="consent" type="checkbox"> ยินยอมให้ใช้ข้อมูลแปลงเพื่อนัดรถมาเก็บเศษพืช</label>
+
+<button id="send">ส่งข้อมูล</button>
+<div id="msg"></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const LIFF_ID = '2012092677-mKT6rDca';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyNBUmmQALCjzvPbGgeXDAdOXFd92u8CkqGoGoaghTCjmvocf0mU6cHVzxjzjXnWGys/exec';
+
+const map = L.map('map').setView([16.779, 103.7926], 14);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 18, attribution: 'Imagery © Esri' }).addTo(map);
+let pin = null;
+map.on('click', e => { pin ? pin.setLatLng(e.latlng) : (pin = L.marker(e.latlng).addTo(map)); });
+
+const $ = id => document.getElementById(id);
+const say = t => { $('msg').textContent = t; };
+let profile = null;
+
+liff.init({ liffId: LIFF_ID })
+  .then(() => { if (!liff.isLoggedIn()) return liff.login(); return liff.getProfile(); })
+  .then(p => { profile = p; })
+  .catch(err => say('เปิดหน้าไม่สำเร็จ: ' + err.message));
+
+$('send').onclick = async () => {
+  if (!profile) return say('กำลังเชื่อมกับ LINE ลองใหม่อีกครั้ง');
+  if (!pin) return say('กรุณาแตะแผนที่ตรงแปลงของคุณก่อน');
+  if (!$('consent').checked) return say('กรุณาติ๊กยินยอมก่อนส่ง');
+  $('send').disabled = true; say('กำลังส่ง...');
+  const ll = pin.getLatLng();
+  try {
+
+    const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({
+      action: 'register', userId: profile.userId, consent: true,
+      crop: $('crop').value, area_rai: $('area').value, village_no: $('village').value,
+      ready_date: $('ready').value, lat: ll.lat.toFixed(6), lng: ll.lng.toFixed(6)
+    }) });
+    const out = await res.json();
+    if (out.error) throw new Error(out.error);
+    say('ลงทะเบียนแปลง ' + out.plot_id + ' แล้ว เมื่อเกี่ยวเสร็จให้กดปุ่ม "แจ้งพร้อมเก็บ"');
+    if (liff.isInClient()) setTimeout(() => liff.closeWindow(), 2500);
+  } catch (e) {
+    say('ส่งไม่สำเร็จ: ' + e.message); $('send').disabled = false;
+  }
+};
+</script>
+</body>
+</html>
