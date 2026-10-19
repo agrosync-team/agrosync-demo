@@ -118,7 +118,7 @@ async function load(fit) {
   const satLine = p => { const r = satOf[p.plot_id]; if (!r) return '';
     return `<br><span class="sat">🛰️ ดาวเทียมจริง (${r.run_date}): ${r.method}${r.ready_date ? ' · พร้อม ' + r.ready_date + ' · มั่นใจ ' + Math.round(r.pred_conf * 100) + '%' : ''}</span>`; };
 
-  // วงล็อต: รอบจุดกึ่งกลางของแปลงในล็อต
+  
   data.lots.forEach(l => {
     const ps = data.plots.filter(p => p.lot_id === l.lot_id);
     if (!ps.length) return;
@@ -130,7 +130,6 @@ async function load(fit) {
       .addTo(layer);
   });
 
-  // จุดแปลง (ไม่มีชื่อหรือรหัสเกษตรกร)
   data.plots.forEach(p => {
     const st = STATUS[(lotOf[p.lot_id] || {}).status] || STATUS.none;
     L.circleMarker([+p.lat, +p.lng], { radius: 6, color: '#222', weight: 1, fillColor: st.c, fillOpacity: 1 })
