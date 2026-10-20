@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agro-Sync · แผนที่ล็อตสำหรับคนรถ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: sans-serif; color: #1d2b1f; background: #f6f8f3; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 16px; background: #2f6b3a; color: #fff; }
+  header h1 { font-size: 18px; margin: 0; }
+  .tag { font-size: 13px; padding: 2px 8px; border-radius: 99px; background: rgba(255,255,255,.18); }
+  main { display: grid; grid-template-columns: 1fr 360px; height: calc(100vh - 48px); }
+  #map { height: 100%; }
+  aside { overflow-y: auto; padding: 12px; border-left: 1px solid #d6ddd2; }
+  .lot { background: #fff; border: 1px solid #d6ddd2; border-left: 6px solid var(--c); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .lot h3 { margin: 0 0 4px; font-size: 16px; }
+  .lot p { margin: 2px 0; font-size: 14px; }
+  .lot select, .lot input, .lot button { font-size: 14px; padding: 6px; margin-top: 6px; width: 100%; }
+  .lot button { background: #2f6b3a; color: #fff; border: 0; border-radius: 6px; padding: 8px; cursor: pointer; }
+  .legend { font-size: 13px; margin-bottom: 10px; line-height: 1.7; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 4px; }
+  .fc { background: #fff; border: 1px solid #d6ddd2; border-left: 6px solid #7a5af5; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .fc h3 { margin: 0 0 6px; font-size: 15px; }
+  .fc table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .fc td { padding: 3px 0; } .fc td + td { text-align: right; font-weight: 600; }
+  .note { font-size: 12px; color: #6b5bb5; margin-top: 6px; }
+  .pred { color: #5a3fd6; font-weight: 600; }
+  .sat { color: #0b6e4f; font-weight: 600; }
+  .fc h4 { margin: 10px 0 4px; font-size: 14px; color: #0b6e4f; }
+  .fc ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+  #toast { font-size: 14px; margin-bottom: 8px; min-height: 18px; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; } aside { border-left: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agro-Sync · ล็อตที่พร้อมเก็บ</h1>
+  <span class="tag" id="today">กำลังโหลด…</span>
+  <span class="tag">ข้อมูลจำลอง ต.ผาเสวย</span>
+</header>
+<main>
+  <div id="map"></div>
+  <aside>
+    <div id="toast"></div>
+    <div class="fc" id="forecast"></div>
+    <div class="legend" id="legend"></div>
+    <div id="lots"></div>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API_URL = 'https://script.google.com/macros/s/AKfycbyNBUmmQALCjzvPbGgeXDAdOXFd92u8CkqGoGoaghTCjmvocf0mU6cHVzxjzjXnWGys/exec';
+const CROP = { rice: 'ฟางข้าว', sugarcane: 'ใบอ้อย', cassava: 'เหง้ามัน' };
+const STATUS = {
+  planned:   { th: 'ครบขั้นต่ำ รอรถ',   c: '#2e9d4a' },
+  pending:   { th: 'ยังไม่ถึงขั้นต่ำ', c: '#e39b1b' },
+  scheduled: { th: 'นัดรถแล้ว',       c: '#2f6fd6' },
+  collected: { th: 'เก็บแล้ว',         c: '#8a948a' },
+  none:      { th: 'ยังไม่รวมล็อต',    c: '#ffffff' }
+};
+const $ = id => document.getElementById(id);
+
+const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18, attribution: 'Imagery © Esri' });
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+const map = L.map('map', { layers: [sat] }).setView([16.76, 103.82], 12);
+L.control.layers({ 'ภาพดาวเทียม': sat, 'แผนที่ถนน': osm }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+$('legend').innerHTML = Object.values(STATUS).map(s => `<span class="dot" style="--c:${s.c};border:1px solid #555"></span>${s.th}`).join(' &nbsp; ');
+
+const km = (a, b) => { const r = Math.PI / 180, x = (b.lng - a.lng) * r * Math.cos((a.lat + b.lat) / 2 * r), y = (b.lat - a.lat) * r; return Math.hypot(x, y) * 6371; };
+// วันที่จากชีตบางช่องอาจมาเป็นเลขซีเรียล (เช่น 46357) ถ้าช่องนั้นไม่ได้ตั้งรูปแบบวันที่ แปลงให้เป็น yyyy-mm-dd ก่อนใช้
+const iso = v => typeof v === 'number' ? new Date(Math.round((v - 25569) * 864e5)).toISOString().slice(0, 10) : (v || '');
+const addDay = (s, n) => { const d = new Date(iso(s) + 'T00:00:00Z'); if (isNaN(d)) return ''; d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+
+const MWH_PER_T = 0.71;   // ราว 710 MWh ต่อ 1,000 ตัน (ค่าฟางข้าว กรณีระมัดระวัง ตามเอกสารทีม)
+const dayDiff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 864e5);
+function forecastText(p, today, lot) {
+  if (lot && lot.status === 'collected') return 'เก็บแล้ว';
+  const d = dayDiff(p.ready_date, today);
+  const when = d > 0 ? `คาดว่าพร้อมในอีก ${d} วัน` : d === 0 ? 'คาดว่าพร้อมวันนี้' : `พร้อมแล้วตั้งแต่ ${-d} วันก่อน`;
+  const conf = p.pred_conf !== undefined && p.pred_conf !== '' ? ` · ความมั่นใจ ${Math.round(p.pred_conf * 100)}%` : ' · รอผลโมเดล';
+  return when + conf;
+}
+function renderForecast(data) {
+  const today = data.demo_today, done = new Set(data.lots.filter(l => ['scheduled', 'collected'].includes(l.status)).map(l => l.lot_id));
+  const open = data.plots.filter(p => !done.has(p.lot_id));
+  const sum = (a, b) => { const ps = open.filter(p => { const d = dayDiff(p.ready_date, today); return d >= a && d <= b; });
+    const t = ps.reduce((s, p) => s + Number(p.est_tonnes || 0), 0); return [ps.length, t]; };
+  const rows = [['พร้อมแล้ว / ภายใน 7 วัน', ...sum(-60, 7)], ['8–14 วันข้างหน้า', ...sum(8, 14)]];
+  $('forecast').innerHTML = `<h3>🔮 พยากรณ์เชื้อเพลิงเข้าโรงไฟฟ้า</h3><table>` +
+    rows.map(([k, n, t]) => `<tr><td>${k}</td><td>${n} แปลง · ${t.toFixed(1)} ตัน · ≈ ${(t * MWH_PER_T).toFixed(1)} MWh</td></tr>`).join('') +
+    `</table><div class="note">ค่าจำลองแทนผลโมเดล AI (ดาวเทียม + อากาศ) · ไม่รวมล็อตที่นัดรถหรือเก็บแล้ว</div>` +
+    satelliteHtml(data.satellite || []);
+}
+function satelliteHtml(sat) {
+  if (!sat.length) return '';
+  const run = sat.map(r => r.run_date).sort().pop();
+  const rows = sat.filter(r => r.run_date === run);
+  const dated = rows.filter(r => r.ready_date).sort((a, b) => Date.parse(a.ready_date) - Date.parse(b.ready_date));
+  const green = rows.length - dated.length;
+  return `<h4>🛰️ ผลจากดาวเทียมจริง (Sentinel-2 · รัน ${run})</h4>` +
+    `<div style="font-size:13px">ตรวจ ${rows.length} แปลง · ทายวันพร้อมได้ ${dated.length} แปลง · ยังเขียว ${green} แปลง</div>` +
+    (dated.length ? '<ul>' + dated.map(r => { const d = dayDiff(r.ready_date, run);
+      return `<li>${r.plot_id}: ${d > 0 ? 'คาดว่าพร้อมในอีก ' + d + ' วัน' : 'น่าจะพร้อมแล้ว'} (${r.ready_date}) · มั่นใจ ${Math.round(r.pred_conf * 100)}% · ${r.method}</li>`; }).join('') + '</ul>' : '') +
+    `<div class="note">baseline จากกฎ ยังไม่ใช่ AI · นับวันจากวันที่รัน ไม่ใช่วันเดโม</div>`;
+}
+
+async function load(fit) {
+  const data = await (await fetch(API_URL)).json();
+  data.plots.forEach(p => { p.ready_date = iso(p.ready_date); });
+  data.lots.forEach(l => { l.ready_from = iso(l.ready_from); l.ready_to = iso(l.ready_to); l.pickup_date = iso(l.pickup_date); });
+  $('today').textContent = 'วันนี้ (เดโม): ' + data.demo_today;
+  layer.clearLayers();
+  renderForecast(data);
+  const lotOf = Object.fromEntries(data.lots.map(l => [l.lot_id, l]));
+  const satOf = {};
+  (data.satellite || []).forEach(r => { if (!satOf[r.plot_id] || r.run_date > satOf[r.plot_id].run_date) satOf[r.plot_id] = r; });
+  const satLine = p => { const r = satOf[p.plot_id]; if (!r) return '';
+    return `<br><span class="sat">🛰️ ดาวเทียมจริง (${r.run_date}): ${r.method}${r.ready_date ? ' · พร้อม ' + r.ready_date + ' · มั่นใจ ' + Math.round(r.pred_conf * 100) + '%' : ''}</span>`; };
+
+  // วงล็อต: รอบจุดกึ่งกลางของแปลงในล็อต
+  data.lots.forEach(l => { try {
+    const ps = data.plots.filter(p => p.lot_id === l.lot_id);
+    if (!ps.length) return;
+    const c = { lat: ps.reduce((s, p) => s + +p.lat, 0) / ps.length, lng: ps.reduce((s, p) => s + +p.lng, 0) / ps.length };
+    const r = Math.max(...ps.map(p => km(c, { lat: +p.lat, lng: +p.lng }))) * 1000 + 250;
+    const st = STATUS[l.status] || STATUS.none;
+    L.circle([c.lat, c.lng], { radius: r, color: st.c, weight: 2, fillOpacity: 0.12 })
+      .bindTooltip(`${l.lot_id} · ${CROP[l.crop]} · ${Number(l.total_t).toFixed(1)} ตัน`, { permanent: true, direction: 'top' })
+      .addTo(layer);
+  } catch (e) { console.warn('วาดล็อตไม่สำเร็จ', l.lot_id, e); } });
+
+  // จุดแปลง (ไม่มีชื่อหรือรหัสเกษตรกร)
+  data.plots.forEach(p => { if (!isFinite(+p.lat) || !isFinite(+p.lng) || p.lat === '' || p.lng === '') return;
+    const st = STATUS[(lotOf[p.lot_id] || {}).status] || STATUS.none;
+    L.circleMarker([+p.lat, +p.lng], { radius: 6, color: '#222', weight: 1, fillColor: st.c, fillOpacity: 1 })
+      .bindPopup(`<b>${p.plot_id}</b><br>${CROP[p.crop]} ${p.area_rai} ไร่<br>ประมาณ ${Number(p.est_tonnes).toFixed(1)} ตัน<br>${p.lot_id ? 'ล็อต ' + p.lot_id : 'ยังไม่รวมล็อต'}<br><span class="pred">🔮 ${forecastText(p, data.demo_today, lotOf[p.lot_id])}</span><br><small>วันพร้อมที่คาด ${p.ready_date} (ค่าจำลองแทนผลโมเดล)</small>${satLine(p)}`)
+      .addTo(layer);
+  });
+  const okPts = data.plots.filter(p => p.lat !== '' && isFinite(+p.lat) && isFinite(+p.lng));
+  if (fit && okPts.length) map.fitBounds(L.latLngBounds(okPts.map(p => [+p.lat, +p.lng])).pad(0.1));
+
+  // รายการล็อต: ล็อตที่รับงานได้ขึ้นก่อน
+  const order = ['planned', 'pending', 'scheduled', 'collected'];
+  $('lots').innerHTML = data.lots.slice().sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status)).map(l => { try {
+    const st = STATUS[l.status] || STATUS.none;
+    const cons = data.contractors.filter(c => String(c.crops_accepted).split(',').includes(l.crop));
+    const form = l.status === 'planned' ? `
+      <select id="c-${l.lot_id}">${cons.map(c => `<option value="${c.contractor_id}">${c.name} (ขั้นต่ำ ${c.min_lot_t} ตัน)</option>`).join('')}</select>
+      <input id="d-${l.lot_id}" type="date" value="${addDay(l.ready_to, 1)}">
+      <button onclick="accept('${l.lot_id}')">รับงานล็อตนี้</button>` : '';
+    return `<div class="lot" style="--c:${st.c}">
+      <h3>${l.lot_id} · ${CROP[l.crop]} · ${Number(l.total_t).toFixed(1)} ตัน</h3>
+      <p>${l.plot_count} แปลง · คาดว่าพร้อม ${l.ready_from} ถึง ${l.ready_to}</p>
+      <p>สถานะ: ${st.th}${l.pickup_date ? ' · รถเข้า ' + l.pickup_date : ''}</p>${form}</div>`;
+  } catch (e) { return `<div class="lot" style="--c:#c00"><h3>${l.lot_id}</h3><p>ข้อมูลล็อตนี้ผิดรูปแบบ ตรวจในชีต</p></div>`; } }).join('');
+}
+
+async function accept(lotId) {
+  $('toast').textContent = 'กำลังส่ง…';
+  const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify({
+    action: 'accept_lot', lot_id: lotId, contractor_id: $('c-' + lotId).value, pickup_date: $('d-' + lotId).value }) });
+  const out = await res.json();
+  $('toast').textContent = out.error ? '⚠ ' + out.error : `รับงาน ${lotId} แล้ว แจ้งชาวบ้านทาง LINE ${out.notified} คน`;
+  load(false);
+}
+
+load(true).catch(e => { $('today').textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + e.message; });
+setInterval(() => load(false).catch(() => {}), 15000);   // รีเฟรชเองทุก 15 วินาที ระหว่างถ่ายเดโม
+</script>
+</body>
+</html>
